@@ -1,0 +1,6 @@
+{
+  "name": "Default",
+  "dockerFile": "../Dockerfile.dev",
+  "workspaceFolder": "/app",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind"
+}
