@@ -1,0 +1,9 @@
+{
+  "name": "Test",
+  "dockerFile": "../../Dockerfile.test",
+  "workspaceFolder": "/app",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind",
+  "shutdownAction": "none",
+  "init": false,
+  "overrideCommand": false
+}

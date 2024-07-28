@@ -1,14 +1,17 @@
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
-use std::process::{Child, Command};
+use std::fs;
+use std::path::Path;
+use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::{thread, time};
 
-static RUNNING: AtomicBool = AtomicBool::new(true);
+static KILLED: AtomicBool = AtomicBool::new(false);
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 static CHILD_PID: Mutex<Option<Pid>> = Mutex::new(None);
-
+static IDE_ATTACHED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn handle_signal(sig: i32) {
     match Signal::try_from(sig) {
@@ -17,7 +20,14 @@ extern "C" fn handle_signal(sig: i32) {
         },
         Ok(Signal::SIGKILL) => {
             println!("Received termination signal");
-            RUNNING.store(false, Ordering::SeqCst);
+            KILLED.store(true, Ordering::SeqCst);
+        },
+        Ok(Signal::SIGINT) => {
+            println!("Received interrupt signal");
+            INTERRUPTED.store(true, Ordering::SeqCst);
+            if let Some(pid) = *CHILD_PID.lock().unwrap() {
+                let _ = signal::kill(pid, Signal::SIGINT);
+            }
         },
         Ok(signal) => {
             // Forward other signals to the child process
@@ -74,7 +84,54 @@ fn spawn_child_process() -> Result<Child, std::io::Error> {
     Ok(child)
 }
 
-fn main() {
+fn is_ide_attached() -> bool {
+    let proc_dir = Path::new("/proc");
+    
+    if let Ok(entries) = fs::read_dir(proc_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(file_name) = path.file_name() {
+                if let Ok(pid) = file_name.to_string_lossy().parse::<i32>() {
+                    if pid != 1 && !is_descendant_of_init(pid) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    false
+}
+
+fn is_descendant_of_init(pid: i32) -> bool {
+    let mut current_pid = pid;
+    
+    while current_pid != 1 {
+        if let Some(ppid) = get_parent_pid(current_pid) {
+            current_pid = ppid;
+        } else {
+            return false;
+        }
+    }
+    
+    true
+}
+
+fn get_parent_pid(pid: i32) -> Option<i32> {
+    let status_file = format!("/proc/{}/status", pid);
+    if let Ok(content) = fs::read_to_string(status_file) {
+        for line in content.lines() {
+            if line.starts_with("PPid:") {
+                if let Some(ppid_str) = line.split_whitespace().nth(1) {
+                    return ppid_str.parse().ok();
+                }
+            }
+        }
+    }
+    None
+}
+
+fn main() -> ExitCode {
     setup_signal_handlers();
 
     println!("PID 1 init process started");
@@ -90,10 +147,32 @@ fn main() {
     // Store the child's PID
     *CHILD_PID.lock().unwrap() = Some(Pid::from_raw(child.id() as i32));
 
-    while RUNNING.load(Ordering::SeqCst) {
-        if let Some(status) = wait_for_child(&mut child) {
-            println!("Child process exited with status: {:?}", status);
-            break;
+    let mut status: u8 = 0;
+
+    while !KILLED.load(Ordering::SeqCst) && !INTERRUPTED.load(Ordering::SeqCst) {
+        let ide_attached = IDE_ATTACHED.load(Ordering::SeqCst);
+        if is_ide_attached() != ide_attached {
+            let new_state = !ide_attached;
+            IDE_ATTACHED.store(new_state, Ordering::SeqCst);
+            if new_state {
+                println!("IDE attached, stopping child process");
+                let _ = child.kill();
+                let _ = child.wait();
+            } else {
+                println!("IDE detached, restarting child process");
+                child = spawn_child_process().expect("Failed to restart child process");
+                *CHILD_PID.lock().unwrap() = Some(Pid::from_raw(child.id() as i32));
+            }
+        }
+
+        if !IDE_ATTACHED.load(Ordering::SeqCst) {
+            if let Some(child_status) = wait_for_child(&mut child) {
+                if let Some(unix_code) = child_status.code() {
+                    println!("Child process exited with status: {:?}", unix_code);
+                    status = unix_code as u8;
+                }
+                break;
+            }
         }
 
         // Reap any other child processes that might have terminated
@@ -103,14 +182,26 @@ fn main() {
     }
 
     // If we're here because of a signal, try to terminate the child gracefully
-    if !RUNNING.load(Ordering::SeqCst) {
+    if KILLED.load(Ordering::SeqCst) {
         println!("Terminating child process");
         let _ = child.kill();
-        let _ = child.wait(); // Ensure we don't leave a zombie
+        if let Ok(child_status) = child.wait() {
+            if let Some(unix_code) = child_status.code() {
+                status = unix_code as u8;
+            }
+        }
+    } else if INTERRUPTED.load(Ordering::SeqCst) {
+        if let Ok(child_status) = child.wait() {
+            if let Some(unix_code) = child_status.code() {
+                status = unix_code as u8;
+            }
+        }
     }
 
     // Final reap to ensure all children are properly waited for
     reap_children();
 
     println!("PID 1 init process exiting");
+
+    ExitCode::from(status)
 }
