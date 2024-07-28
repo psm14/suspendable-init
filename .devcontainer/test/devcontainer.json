@@ -1,9 +1,11 @@
 {
+  "$schema": "https://raw.githubusercontent.com/devcontainers/spec/main/schemas/devContainer.schema.json",
   "name": "Test",
-  "dockerFile": "../../Dockerfile.test",
+  "dockerComposeFile": "./docker-compose.yaml",
+  "service": "devcontainer",
   "workspaceFolder": "/app",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind",
   "shutdownAction": "none",
   "init": false,
-  "overrideCommand": false
+  "overrideCommand": false,
+  "postAttachCommand": "kill -SIGUSR1 1"
 }
