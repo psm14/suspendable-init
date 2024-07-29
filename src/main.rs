@@ -38,13 +38,9 @@ fn spawn_child_process() -> Result<Child, std::io::Error> {
 }
 
 fn exit_status_to_exit_code(status: ExitStatus) -> ExitCode {
-    if let Some(code) = status.code() {
-        ExitCode::from(code as u8)
-    } else {
-        // This can happen if the process was terminated by a signal
-        // Here we choose a generic exit code, like 1, to indicate an error
-        ExitCode::from(1)
-    }
+    status.code()
+        .map(|c| ExitCode::from(c.try_into().unwrap_or(1)))
+        .unwrap_or(ExitCode::FAILURE)
 }
 
 fn main() -> ExitCode {
@@ -63,7 +59,6 @@ fn main() -> ExitCode {
     sigset.thread_block().expect("Failed to block signals");
 
     while let Ok(signal) = sigset.wait() {
-        println!("{:?}", signal);
         match signal {
             Signal::SIGCHLD => {
                 match proc.try_wait() {
@@ -102,7 +97,6 @@ fn main() -> ExitCode {
             _ => {
                 if let Ok(pid) = proc.id().try_into() {
                     let pid = Pid::from_raw(pid);
-                    println!("Sending {:?} to {:?}", signal, pid);
                     let _ = signal::kill(pid, signal).expect("Error sending signal to process");
                 }
             }
