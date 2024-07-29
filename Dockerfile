@@ -6,10 +6,10 @@ RUN rustup target add x86_64-unknown-linux-musl && \
 WORKDIR /app
 COPY . /app
 
-RUN cargo build --release && strip target/release/init
+RUN cargo build --release && strip target/release/suspendable-init
 
 FROM tianon/toybox:0
 
-COPY --from=build /app/target/release/init /init
+COPY --from=build /app/target/release/suspendable-init /init
 
 ENTRYPOINT [ "/init" ]
